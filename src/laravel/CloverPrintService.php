@@ -168,9 +168,10 @@ class CloverPrintService
     }
 
     /**
+     * Get all Clover devices for the merchant (dynamic – call this to get deviceId at runtime).
      * GET /v3/merchants/:mId/devices
      *
-     * @return array<int, array<string, mixed>>
+     * @return array<int, array{id: string, name?: string, model?: string, serial?: string, deviceTypeName?: string, ...}>
      */
     public function getDevices(string $cloverUrl, string $cloverMerchantId, string $cloverBearerToken): array
     {

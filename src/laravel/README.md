@@ -36,9 +36,27 @@ if ($result['success']) {
 return response()->json($result);
 ```
 
-## 2. Print to a specific device
+## 2. Get deviceId dynamically
 
-If you know the Clover device UUID (e.g. from GET /v3/merchants/:mId/devices):
+Call `getDevices()` to get the list of Clover devices at runtime. Each device has an `id` (UUID) – use that as `deviceId` when calling `sendPrintEvent()`.
+
+```php
+$service = app(CloverPrintService::class);
+
+$devices = $service->getDevices($cloverUrl, $cloverMerchantId, $cloverBearerToken);
+// $devices = [
+//   [ 'id' => '926766ca-5636-8598-e959-6e3c6fe047e1', 'name' => '...', 'model' => 'C406', ... ],
+//   [ 'id' => '...', ... ],
+// ]
+
+// Use first device, or pick by model/name
+$deviceId = $devices[0]['id'] ?? null;
+if ($deviceId) {
+    $result = $service->sendPrintEvent($cloverOrderId, $cloverUrl, $cloverMerchantId, $cloverBearerToken, $deviceId);
+}
+```
+
+## 3. Print to a specific device (when you have deviceId)
 
 ```php
 $result = $service->sendPrintEvent(
@@ -46,11 +64,11 @@ $result = $service->sendPrintEvent(
     $cloverUrl,
     $cloverMerchantId,
     $cloverBearerToken,
-    $deviceId
+    $deviceId   // from getDevices() or stored config
 );
 ```
 
-## 3. Print to all devices (try all)
+## 4. Print to all devices (try all)
 
 Use when the default firing device isn’t set or you’re not sure which device has the printer. Sends one print request per device.
 
@@ -65,9 +83,7 @@ $result = $service->sendPrintToAllDevices(
 // $result['results'] = [ ['deviceId' => '...', 'model' => '...', 'success' => true/false, 'state' => '...', 'error' => '...' ], ... ]
 ```
 
-## 4. List devices
-
-To show devices in your UI or pick a deviceId:
+## 5. List devices (same as “Get deviceId dynamically”)
 
 ```php
 $devices = $service->getDevices($cloverUrl, $cloverMerchantId, $cloverBearerToken);
