@@ -26,7 +26,7 @@ On error: `success: false`, `error`, `cloverStatus`, `cloverResponse`, optional 
 
 ## GET /test-print/order-types
 
-List all order types for the merchant. Use an `id` (e.g. for “Online Order”, “Take Out”, “Delivery”) in `POST /test-print` as `orderTypeId` so your orders print like Uber Eats/DoorDash.
+List all order types for the merchant. Use an `id` (e.g. "Online Order", "Take Out", "Delivery") as `orderTypeId` in `POST /test-print` so your orders print like Uber Eats/DoorDash.
 
 **Response (200):**
 
@@ -44,6 +44,44 @@ List all order types for the merchant. Use an `id` (e.g. for “Online Order”,
     }
   ],
   "usage": "POST /test-print with body { \"orderTypeId\": \"<id from above>\" }"
+}
+```
+
+---
+
+## GET /test-print/items
+
+List all sellable inventory items (`available: true`, `hidden: false`). Use `id` values as `itemIds` in `POST /test-print` to create an order using real menu items.
+
+**Response (200):**
+
+```json
+{
+  "success": true,
+  "count": 12,
+  "items": [
+    { "id": "ITEM_ID_1", "name": "Burger", "price": 1099 },
+    { "id": "ITEM_ID_2", "name": "Fries",  "price": 399  }
+  ]
+}
+```
+
+---
+
+## GET /test-print/employees
+
+List all Clover employees. Use `id` as `employeeId` in `POST /test-print` to associate the order with a specific employee.
+
+**Response (200):**
+
+```json
+{
+  "success": true,
+  "count": 3,
+  "employees": [
+    { "id": "EMP_ID_1", "name": "Alice", "role": "ADMIN" },
+    { "id": "EMP_ID_2", "name": "Bob",   "role": "EMPLOYEE" }
+  ]
 }
 ```
 
@@ -85,36 +123,46 @@ Returns a step-by-step guide and API call summary for getting print on a Star pr
 
 ## POST /test-print
 
-Create a Clover order (2 dummy line items), lock it, and request a print. Order is created with optional `orderType` so it can route to the same printer as online/delivery orders.
+Create a Clover order, pay it (cash), and trigger a `print_event`. Supports dummy items (default) or real inventory items via `itemIds`. Order metadata mirrors an online delivery order so Clover routing fires to the kitchen printer.
 
 **Request body (all optional):**
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `orderTypeId` | string | Order type ID from GET /test-print/order-types. Use same as Online Order/Delivery. |
-| `deviceId` | string | Clover device UUID from GET /test-print/devices. Send print to this device only. |
+| `orderTypeId` | string | Order type ID from `GET /test-print/order-types`. Use the same as Online Order/Delivery. |
+| `employeeId` | string | Employee ID from `GET /test-print/employees`. Defaults to first active employee. |
+| `itemIds` | string[] | Real Clover item IDs from `GET /test-print/items`. If omitted, dummy items are created. |
+| `deviceId` | string | Clover device UUID from `GET /test-print/devices`. Send print to this device only. |
 | `tryAllDevices` | boolean | If `true`, send print to every Clover device. |
 
-**Example bodies:**
+**Example — default (dummy items, auto employee):**
 
 ```json
 {}
 ```
 
+**Example — real menu items:**
+
 ```json
-{ "orderTypeId": "ORDER_TYPE_ID" }
+{
+  "itemIds": ["ITEM_ID_1", "ITEM_ID_2"]
+}
 ```
+
+**Example — real items + specific employee + order type:**
+
+```json
+{
+  "itemIds": ["ITEM_ID_1", "ITEM_ID_2"],
+  "employeeId": "EMP_ID_1",
+  "orderTypeId": "ORDER_TYPE_ID"
+}
+```
+
+**Example — try all devices:**
 
 ```json
 { "tryAllDevices": true }
-```
-
-```json
-{ "orderTypeId": "ORDER_TYPE_ID", "tryAllDevices": true }
-```
-
-```json
-{ "deviceId": "DEVICE_UUID" }
 ```
 
 **Response (200):**
@@ -123,18 +171,90 @@ Create a Clover order (2 dummy line items), lock it, and request a print. Order 
 {
   "success": true,
   "orderId": "Y8TNWGTYHVP7G",
-  "printEvent": { "id": "...", "state": "CREATED", ... },
+  "paymentId": "...",
+  "printEventId": "...",
+  "printState": "CREATED",
+  "orderState": "locked",
+  "printEvent": { "id": "...", "state": "CREATED" },
   "confirmation": {
-    "message": "Order created, locked, and print requested.",
+    "message": "Order created, paid (cash), and print requested.",
     "orderState": "locked",
     "lineItemCount": 2,
-    "orderDetails": { ... }
+    "orderDetails": { "..." : "..." }
   },
-  "noPrintTroubleshooting": { ... }
+  "noPrintTroubleshooting": { "..." : "..." }
 }
 ```
 
 On Clover API error: `success: false`, `failedStep`, `error`, `cloverStatus`, `cloverResponse`, `hint`.
+
+---
+
+## POST /test-print/real-menu-print
+
+Create an order using the first 2 real sellable inventory items, pay it (cash), and trigger a `print_event`. Useful for testing print with actual menu items without having to supply IDs.
+
+**Request body (all optional):**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `orderTypeId` | string | Order type ID from `GET /test-print/order-types`. |
+| `employeeId` | string | Employee ID. Defaults to first active employee. |
+
+**Example:**
+
+```json
+{}
+```
+
+**Response (200):**
+
+```json
+{
+  "success": true,
+  "orderId": "...",
+  "paymentId": "...",
+  "itemsUsed": [
+    { "id": "ITEM_ID_1", "name": "Burger" },
+    { "id": "ITEM_ID_2", "name": "Fries" }
+  ],
+  "printEventId": "...",
+  "printState": "CREATED",
+  "printEvent": { "..." : "..." }
+}
+```
+
+On error (fewer than 2 sellable items): `success: false`, `error`, `itemsFound`.
+
+---
+
+## POST /test-print/test-print-direct
+
+Create an order, pay it (cash), then call the Clover direct order print endpoint (`GET /v3/merchants/{mId}/orders/{orderId}/print`). Does **not** use `print_event`. For testing the direct print API only.
+
+**Request body:** none required.
+
+**Response (200 — success):**
+
+```json
+{
+  "success": true,
+  "orderId": "...",
+  "paymentId": "...",
+  "directPrintTriggered": true
+}
+```
+
+**Response (200 — print failed):**
+
+```json
+{
+  "success": false,
+  "orderId": "...",
+  "paymentId": "...",
+  "printError": { "..." : "..." }
+}
+```
 
 ---
 
@@ -162,8 +282,8 @@ Re-send a print request for an existing order.
 {
   "success": true,
   "message": "Print request sent.",
-  "printEvent": { "id": "...", "state": "...", "deviceRef": { ... } },
-  "noPrintTroubleshooting": { ... }
+  "printEvent": { "id": "...", "state": "...", "deviceRef": { "..." : "..." } },
+  "noPrintTroubleshooting": { "..." : "..." }
 }
 ```
 
@@ -171,7 +291,7 @@ Re-send a print request for an existing order.
 
 ## POST /test-print/debug-print
 
-Run a diagnostic: send print to default or all devices, then check print event status after a short delay. Use when print doesn’t appear.
+Run a diagnostic: send print to default or all devices, then check print event status after a short delay. Use when print doesn't appear.
 
 **Request body:**
 
@@ -190,9 +310,9 @@ Run a diagnostic: send print to default or all devices, then check print event s
   "diagnostic": {
     "config": { "baseURL": "...", "merchantId": "..." },
     "orderId": "...",
-    "printRequests": [ ... ],
-    "statusChecks": [ ... ],
-    "whyNoPrint": [ ... ]
+    "printRequests": [ "..." ],
+    "statusChecks": [ "..." ],
+    "whyNoPrint": [ "..." ]
   }
 }
 ```
@@ -211,7 +331,7 @@ Fetch full order details (state, line items) for an existing order. Useful for r
   "orderId": "...",
   "orderState": "locked",
   "lineItemCount": 2,
-  "orderDetails": { ... }
+  "orderDetails": { "..." : "..." }
 }
 ```
 
@@ -219,8 +339,8 @@ Fetch full order details (state, line items) for an existing order. Useful for r
 
 ## Clover print request format
 
-The server calls Clover’s [Print API](https://docs.clover.com/dev/docs/printing-orders-rest-api#request-exampleprint-an-order):
+The server calls Clover's [Print API](https://docs.clover.com/dev/docs/printing-orders-rest-api#request-exampleprint-an-order):
 
 - **Endpoint:** `POST /v3/merchants/{mId}/print_event`
-- **Body:** `{ "orderRef": { "id": "<orderId>" } }` (optional `deviceRef: { "id": "<deviceId>" }`)
-- Print is routed to the **firing device’s order printer** (or onboard printer if no order printer).
+- **Body:** `{ "orderRef": { "id": "<orderId>" } }` (optional `"deviceRef": { "id": "<deviceId>" }`)
+- Print is routed to the **firing device's order printer** (or onboard printer if no order printer).
