@@ -83,7 +83,17 @@ $result = $service->sendPrintToAllDevices(
 // $result['results'] = [ ['deviceId' => '...', 'model' => '...', 'success' => true/false, 'state' => '...', 'error' => '...' ], ... ]
 ```
 
-## 5. List devices (same as “Get deviceId dynamically”)
+## 5. List order types
+
+Get order type ids to use when creating orders (so prints route like Uber Eats/DoorDash):
+
+```php
+$orderTypes = $service->getOrderTypes($cloverUrl, $cloverMerchantId, $cloverBearerToken);
+// array of [ 'id' => '...', 'label' => 'Take Out', 'labelKey' => '...', 'isDefault' => false, ... ]
+// Use $orderTypes[n]['id'] when creating the order (Clover API: orderType: { id: "<id>" })
+```
+
+## 6. List devices (same as “Get deviceId dynamically”)
 
 ```php
 $devices = $service->getDevices($cloverUrl, $cloverMerchantId, $cloverBearerToken);
@@ -96,7 +106,7 @@ Prints route to the same printer as Uber Eats/DoorDash when the **order** is cre
 
 When creating the order via Clover API, include the order type:
 
-- Get order types: `GET https://{base}/v3/merchants/{mId}/order_types`
+- Get order types: `$service->getOrderTypes($cloverUrl, $cloverMerchantId, $cloverBearerToken)` → returns array of `[ 'id' => '...', 'label' => 'Take Out', ... ]`
 - Pick the id for “Online Order” / “Take Out” / “Delivery”
 - Create order with body: `{ "state": "open", "orderType": { "id": "<that id>" } }`
 

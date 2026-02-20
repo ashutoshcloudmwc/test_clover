@@ -168,6 +168,36 @@ class CloverPrintService
     }
 
     /**
+     * Get all order types for the merchant (use when creating orders so prints route like Uber Eats/DoorDash).
+     * GET /v3/merchants/:mId/order_types
+     *
+     * @return array<int, array{id: string, label?: string, labelKey?: string, isDefault?: bool, systemOrderTypeId?: string, ...}>
+     */
+    public function getOrderTypes(string $cloverUrl, string $cloverMerchantId, string $cloverBearerToken): array
+    {
+        $url = $this->baseUrl($cloverUrl) . "/v3/merchants/{$cloverMerchantId}/order_types";
+
+        try {
+            $response = Http::withHeaders([
+                'Accept'        => 'application/json',
+                'Authorization' => "Bearer {$cloverBearerToken}",
+            ])->get($url);
+
+            if (!$response->successful()) {
+                return [];
+            }
+            $data = $response->json();
+            if (is_array($data)) {
+                return $data;
+            }
+            return $data['elements'] ?? $data['data'] ?? [];
+        } catch (\Throwable $e) {
+            Log::channel('clover')->error('Clover getOrderTypes failed', ['message' => $e->getMessage()]);
+            return [];
+        }
+    }
+
+    /**
      * Get all Clover devices for the merchant (dynamic – call this to get deviceId at runtime).
      * GET /v3/merchants/:mId/devices
      *

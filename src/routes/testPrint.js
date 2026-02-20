@@ -9,12 +9,22 @@ const { getHint } = require('../utils/hints');
 const {
   getDevices,
   getOrderTypes,
+  getAllEmployees,
+  getAllItems,
+  getSellableItems,
   requestPrint,
   requestPrintAllDevices,
   getOrder,
   getPrintEventStatus,
   checkConnection,
   createTestOrderWithItemsAndLock,
+  createTestOrderWithItemsAndPay,
+  printOrderDirect,
+  getFirstActiveEmployee,
+  createOrder,
+  addLineItem,
+  lockOrder,
+  payOrderCash,
   PRINT_EVENT_DELAY_MS,
 } = require('../services/cloverService');
 const {
@@ -45,36 +55,75 @@ function sendCloverError(res, step, err, defaultStatus = 500) {
   });
 }
 
-// ----- POST /test-print: create order + print -----
+// ----- POST /test-print: create order, pay (cash), print, verify print state -----
 router.post('/', requireCloverConfig, async (req, res) => {
-  const { deviceId = null, tryAllDevices = false, orderTypeId = null } = req.body || {};
+  const { deviceId = null, tryAllDevices = false, orderTypeId = null, employeeId = null, itemIds = null } = req.body || {};
   let failedStep = '';
 
   try {
-    console.log('[Config]', CLOVER_BASE_URL, '| Merchant:', MERCHANT_ID, deviceId ? '| deviceId: ' + deviceId : '', orderTypeId ? '| orderTypeId: ' + orderTypeId : '');
+    console.log('[Config]', CLOVER_BASE_URL, '| Merchant:', MERCHANT_ID, deviceId ? '| deviceId: ' + deviceId : '', orderTypeId ? '| orderTypeId: ' + orderTypeId : '', employeeId ? '| employeeId: ' + employeeId : '');
 
     failedStep = 'create_order';
-    const { orderId } = await createTestOrderWithItemsAndLock(clover, MERCHANT_ID, DUMMY_ITEMS, { orderTypeId });
+    let orderId, paymentId;
+    try {
+      const result = await createTestOrderWithItemsAndPay(clover, MERCHANT_ID, DUMMY_ITEMS, { orderTypeId, employeeId, itemIds: itemIds || undefined });
+      orderId = result.orderId;
+      paymentId = result.paymentId;
+    } catch (payErr) {
+      if (payErr.message === 'Order total is zero. Cannot create payment.') {
+        return res.status(400).json({
+          success: false,
+          failedStep: 'payment',
+          error: payErr.message,
+        });
+      }
+      if (payErr.response?.data) {
+        return res.status(payErr.response.status || 500).json({
+          success: false,
+          failedStep: 'payment',
+          error: payErr.response.data?.message || payErr.message,
+          cloverStatus: payErr.response.status,
+          cloverResponse: payErr.response.data,
+        });
+      }
+      throw payErr;
+    }
     if (orderTypeId) console.log('[Step 2] Using orderType:', orderTypeId);
+
+    failedStep = 'fetch_order';
+    const orderDetails = await getOrder(clover, MERCHANT_ID, orderId);
+    const orderState = orderDetails?.state ?? null;
+    console.log('[Order]', orderId, 'state:', orderState, '| paymentId:', paymentId);
 
     failedStep = 'print_event';
     const printEventResult = tryAllDevices
       ? await requestPrintAllDevices(clover, MERCHANT_ID, orderId)
       : await requestPrint(clover, MERCHANT_ID, orderId, deviceId || undefined);
 
-    failedStep = 'fetch_order';
-    const orderDetails = await getOrder(clover, MERCHANT_ID, orderId);
-    const lineItemCount = orderDetails?.lineItems?.elements?.length ?? 0;
-    console.log('[Order]', orderId, 'state:', orderDetails?.state, '| lineItems:', lineItemCount);
+    const printEventId = tryAllDevices ? undefined : (printEventResult?.error ? null : printEventResult?.id ?? null);
+    let printState = printEventResult?.state ?? null;
+
+    if (printEventId) {
+      await new Promise((r) => setTimeout(r, PRINT_EVENT_DELAY_MS));
+      const statusRes = await getPrintEventStatus(clover, MERCHANT_ID, printEventId);
+      printState = statusRes?.error ? printEventResult?.state : statusRes?.state;
+    } else if (tryAllDevices && printEventResult?.results?.length) {
+      const firstWithState = printEventResult.results.find((r) => r.state);
+      if (firstWithState) printState = firstWithState.state;
+    }
 
     return res.json({
       success: true,
       orderId,
+      paymentId,
+      printEventId: printEventId || undefined,
+      printState: printState ?? undefined,
+      orderState,
       printEvent: printEventResult,
       confirmation: {
-        message: 'Order created, locked, and print requested.',
-        orderState: orderDetails?.state,
-        lineItemCount,
+        message: 'Order created, paid (cash), and print requested.',
+        orderState,
+        lineItemCount: orderDetails?.lineItems?.elements?.length ?? 0,
         orderDetails,
       },
       noPrintTroubleshooting: buildTroubleshooting(orderId),
@@ -82,6 +131,45 @@ router.post('/', requireCloverConfig, async (req, res) => {
   } catch (err) {
     console.error('[Clover API error] Step:', failedStep, err.response?.status, err.response?.data || err.message);
     sendCloverError(res, failedStep, err);
+  }
+});
+
+// ----- POST /test-print/test-print-direct: create order, pay, then direct Clover print (no print_event) -----
+router.post('/test-print-direct', requireCloverConfig, async (req, res) => {
+  let orderId, paymentId;
+  try {
+    const result = await createTestOrderWithItemsAndPay(clover, MERCHANT_ID, DUMMY_ITEMS, {});
+    orderId = result.orderId;
+    paymentId = result.paymentId;
+  } catch (err) {
+    if (err.message === 'Order total is zero. Cannot create payment.') {
+      return res.status(400).json({ success: false, error: err.message });
+    }
+    const status = err.response?.status || 500;
+    const data = err.response?.data;
+    return res.status(status >= 400 ? status : 500).json({
+      success: false,
+      error: data?.message || err.message,
+      cloverStatus: status,
+      cloverResponse: data,
+    });
+  }
+
+  try {
+    await printOrderDirect(clover, MERCHANT_ID, orderId);
+    return res.json({
+      success: true,
+      orderId,
+      paymentId,
+      directPrintTriggered: true,
+    });
+  } catch (printErr) {
+    return res.json({
+      success: false,
+      orderId,
+      paymentId,
+      printError: printErr,
+    });
   }
 });
 
@@ -256,6 +344,32 @@ router.get('/order-types', requireCloverConfig, async (req, res) => {
   }
 });
 
+// ----- GET /test-print/items -----
+router.get('/items', requireCloverConfig, async (req, res) => {
+  try {
+    const all = await getAllItems(clover, MERCHANT_ID);
+    const filtered = all.filter((i) => i.available === true && i.hidden !== true);
+    return res.json({
+      success: true,
+      count: filtered.length,
+      items: filtered.map((i) => ({ id: i.id, name: i.name, price: i.price })),
+    });
+  } catch (err) {
+    return res.status(500).json({ success: false, error: err });
+  }
+});
+
+// ----- GET /test-print/employees -----
+router.get('/employees', requireCloverConfig, async (req, res) => {
+  try {
+    const employees = await getAllEmployees(clover, MERCHANT_ID);
+    return res.json({ success: true, count: employees.length, employees });
+  } catch (err) {
+    const status = typeof err === 'object' && err !== null ? 500 : 500;
+    return res.status(status).json({ success: false, error: err });
+  }
+});
+
 // ----- GET /test-print/devices -----
 router.get('/devices', requireCloverConfig, async (req, res) => {
   try {
@@ -328,6 +442,93 @@ router.get('/verify/:orderId', requireCloverConfig, async (req, res) => {
       error: data?.message || data?.error || err.message,
       details: data,
     });
+  }
+});
+
+// ----- POST /test-print/real-menu-print: order with real inventory items + print_event -----
+router.post('/real-menu-print', requireCloverConfig, async (req, res) => {
+  const { orderTypeId = null, employeeId: reqEmployeeId = null } = req.body || {};
+  let failedStep = '';
+
+  try {
+    failedStep = 'fetch_items';
+    const items = await getSellableItems(clover, MERCHANT_ID);
+    if (items.length < 2) {
+      return res.status(400).json({
+        success: false,
+        error: `Not enough sellable items in inventory. Found ${items.length}, need at least 2.`,
+        itemsFound: items.map((i) => ({ id: i.id, name: i.name })),
+      });
+    }
+    const selected = items.slice(0, 2);
+
+    failedStep = 'fetch_employee';
+    const employeeId = reqEmployeeId || await getFirstActiveEmployee(clover, MERCHANT_ID);
+
+    failedStep = 'create_order';
+    const orderData = await createOrder(clover, MERCHANT_ID, {
+      orderTypeId,
+      employeeId,
+      externalReferenceId: `A${Date.now().toString().slice(-11)}`,
+      title: 'Online Delivery Order',
+      note: 'Created via API with employee',
+    });
+    const orderId = orderData?.id;
+    if (!orderId) throw new Error('Order creation returned no id');
+
+    failedStep = 'add_line_items';
+    for (const item of selected) {
+      await addLineItem(clover, MERCHANT_ID, orderId, item.id, 1);
+    }
+
+    failedStep = 'lock_order';
+    await lockOrder(clover, MERCHANT_ID, orderId);
+
+    failedStep = 'fetch_order';
+    const order = await getOrder(clover, MERCHANT_ID, orderId);
+    let total = order?.total ?? 0;
+    if (total === 0) {
+      const elements = order?.lineItems?.elements ?? [];
+      for (const line of elements) {
+        total += Number(line.unitPrice ?? line.price ?? 0) * Number(line.quantity ?? 1);
+      }
+    }
+    if (total === 0) {
+      for (const item of selected) {
+        total += Number(item.price ?? 0);
+      }
+    }
+    if (total === 0) {
+      return res.status(400).json({ success: false, failedStep: 'payment', error: 'Order total is zero. Cannot create payment.' });
+    }
+
+    failedStep = 'payment';
+    const paymentData = await payOrderCash(clover, MERCHANT_ID, orderId, total);
+    const paymentId = paymentData?.id ?? null;
+
+    failedStep = 'print_event';
+    const printEventResult = await requestPrint(clover, MERCHANT_ID, orderId);
+    const printEventId = printEventResult?.error ? null : (printEventResult?.id ?? null);
+    let printState = printEventResult?.state ?? null;
+
+    if (printEventId) {
+      await new Promise((r) => setTimeout(r, PRINT_EVENT_DELAY_MS));
+      const statusRes = await getPrintEventStatus(clover, MERCHANT_ID, printEventId);
+      printState = statusRes?.error ? printState : (statusRes?.state ?? printState);
+    }
+
+    return res.json({
+      success: true,
+      orderId,
+      paymentId,
+      itemsUsed: selected.map((i) => ({ id: i.id, name: i.name })),
+      printEventId: printEventId || undefined,
+      printState: printState ?? undefined,
+      printEvent: printEventResult,
+    });
+  } catch (err) {
+    console.error('[real-menu-print] Step:', failedStep, err.response?.status, err.response?.data || err.message);
+    sendCloverError(res, failedStep, err);
   }
 });
 
